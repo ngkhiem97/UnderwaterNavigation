@@ -11,13 +11,6 @@ import signal
 os.environ["OMP_NUM_THREADS"] = "1"
 
 def signal_handler(sig, frame):
-    """
-    Handle the given signal by exiting the program.
-
-    Args:
-        sig (int): The signal number.
-        frame (frame): The current stack frame.
-    """
     sys.exit(0)
 
 def initialize_env(env, pid):
