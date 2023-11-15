@@ -7,9 +7,134 @@ import time
 import os
 import sys
 import signal
+from core.unity_underwater_env import UnderwaterNavigation
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
+class Agent:
+    def __init__(self, env, policy, device, custom_reward=None, running_state=None, num_threads=1, training=True):
+        self.env = env
+        self.policy = policy
+        self.device = device
+        self.custom_reward = custom_reward
+        self.running_state = running_state
+        self.num_threads = num_threads
+        self.training = training
+
+    def collect_samples(self, min_batch_size, mean_action=False, render=False):
+        if min_batch_size == 0:
+            return None, None
+        t_start = time.time()
+        to_device(torch.device("cpu"), self.policy)
+        thread_batch_size = int(math.floor(min_batch_size / self.num_threads))
+        queue = multiprocessing.Queue()
+        workers = self._start_workers(queue, thread_batch_size, mean_action)
+        memory, log = samples(0, None, self.env[0], self.policy, self.custom_reward, mean_action, render, self.running_state, thread_batch_size, training=self.training)
+        worker_results = [queue.get() for _ in workers]
+        worker_memories, worker_logs = zip(*[(res[1], res[2]) for res in worker_results])
+        for worker_memory in worker_memories:
+            memory.append(worker_memory)
+        batch = memory.sample()
+        if self.num_threads > 1:
+            log = self._merge_log([log] + list(worker_logs))
+        to_device(self.device, self.policy)
+        t_end = time.time()
+        log["sample_time"] = t_end - t_start
+        log.update(self._calculate_action_stats(batch))
+        return batch, log
+
+    def _start_workers(self, queue, thread_batch_size, mean_action):
+        workers = []
+        for i in range(self.num_threads - 1):
+            worker_args = (
+                i + 1,
+                queue,
+                self.env[i + 1],
+                self.policy,
+                self.custom_reward,
+                mean_action,
+                False,  # render is always False for worker threads
+                self.running_state,
+                thread_batch_size,
+                self.training,
+            )
+            worker = multiprocessing.Process(target=samples, args=worker_args)
+            workers.append(worker)
+            worker.start()
+        return workers
+
+    def _calculate_action_stats(self, batch):
+        actions = np.vstack(batch.action)
+        return {
+            "action_mean": np.mean(actions, axis=0),
+            "action_min": np.min(actions, axis=0),
+            "action_max": np.max(actions, axis=0)
+        }
+
+    def _merge_log(self, log_list):
+        log = dict()
+        log["total_reward"] = sum([x["total_reward"] for x in log_list])
+        log["num_episodes"] = sum([x["num_episodes"] for x in log_list])
+        log["num_steps"] = sum([x["num_steps"] for x in log_list])
+        log["avg_reward"] = log["total_reward"] / log["num_episodes"]
+        log["max_reward"] = max([x["max_reward"] for x in log_list])
+        log["min_reward"] = min([x["min_reward"] for x in log_list])
+        if "total_c_reward" in log_list[0]:
+            log["total_c_reward"] = sum([x["total_c_reward"] for x in log_list])
+            log["avg_c_reward"] = log["total_c_reward"] / log["num_steps"]
+            log["max_c_reward"] = max([x["max_c_reward"] for x in log_list])
+            log["min_c_reward"] = min([x["min_c_reward"] for x in log_list])
+        return log
+
+
+
+def samples(pid, queue, env, policy, custom_reward, mean_action, render, running_state, min_batch_size, training=True):
+    """
+    Collects a batch of experiences from the environment using the given policy.
+
+    Args:
+        pid (int): The process ID.
+        queue (Queue): A multiprocessing queue to store the collected experiences.
+        env (gym.Env): The environment to collect experiences from.
+        policy (Policy): The policy to use for selecting actions.
+        custom_reward (function): A function to calculate the custom reward.
+        mean_action (bool): Whether to use the mean action or sample from the policy.
+        render (bool): Whether to render the environment.
+        running_state (RunningStat): The running state of the environment.
+        min_batch_size (int): The minimum number of experiences to collect.
+        training (bool): Whether to update the policy.
+
+    Returns:
+        tuple: A tuple containing the collected experiences and the log data.
+    """
+    initialize_env(env, pid)
+    log, memory = {}, Memory()
+    num_episodes, num_steps, num_episodes_success, num_steps_episodes, total_reward, total_c_reward, reward_done = 0, 0, 0, 0, 0, 0, 0
+    min_reward, max_reward, min_c_reward, max_c_reward = 1e6, -1e6, 1e6, -1e6
+    while num_steps < min_batch_size:
+        state = process_state(*env.reset(), running_state)
+        reward_episode = 0
+        for t in range(10000):
+            signal.signal(signal.SIGINT, signal_handler)
+            action = select_action(policy, *state, mean_action)
+            next_state, reward, done = step_environment(env, action, running_state, custom_reward)
+            reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, reward_done, num_episodes_success, num_steps_episodes = process_reward(reward, *state, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes)
+            memory.push(*state, action, 0 if done else 1, *next_state, reward)
+            if render: env.render()
+            if done: break
+            state = next_state
+        num_steps += t + 1
+        num_episodes += 1
+        total_reward += reward_episode
+        min_reward = min(min_reward, reward_episode)
+        max_reward = max(max_reward, reward_episode)
+        if not training: write_reward(reward_episode, num_episodes)
+    log = update_log(custom_reward, log, num_episodes, num_steps, num_episodes_success, num_steps_episodes, total_reward, total_c_reward, reward_done, min_reward, max_reward, min_c_reward, max_c_reward)
+    if queue is not None:
+        queue.put([pid, memory, log])
+    else:
+        return memory, log
+    
 def signal_handler(sig, frame):
     sys.exit(0)
 
@@ -87,7 +212,7 @@ def select_action(policy: MyPolicy, img_depth, goal, ray, hist_action, mean_acti
     action = int(action) if policy.is_disc_action else action.astype(np.float64)
     return action
 
-def step_environment(env, action, running_state):
+def step_environment(env: UnderwaterNavigation, action, running_state):
     """
     Takes a step in the environment using the given action and returns the next state, reward, and done flag.
 
@@ -204,125 +329,3 @@ def update_log(custom_reward, log, num_episodes, num_steps, num_episodes_success
         log["max_c_reward"] = max_c_reward
         log["min_c_reward"] = min_c_reward
     return log
-
-def samples(pid, queue, env, policy, custom_reward, mean_action, render, running_state, min_batch_size, training=True):
-    """
-    Collects a batch of experiences from the environment using the given policy.
-
-    Args:
-        pid (int): The process ID.
-        queue (Queue): A multiprocessing queue to store the collected experiences.
-        env (gym.Env): The environment to collect experiences from.
-        policy (Policy): The policy to use for selecting actions.
-        custom_reward (function): A function to calculate the custom reward.
-        mean_action (bool): Whether to use the mean action or sample from the policy.
-        render (bool): Whether to render the environment.
-        running_state (RunningStat): The running state of the environment.
-        min_batch_size (int): The minimum number of experiences to collect.
-        training (bool): Whether to update the policy.
-
-    Returns:
-        tuple: A tuple containing the collected experiences and the log data.
-    """
-    initialize_env(env, pid)
-    log, memory = {}, Memory()
-    num_episodes, num_steps, num_episodes_success, num_steps_episodes, total_reward, total_c_reward, reward_done = 0, 0, 0, 0, 0, 0, 0
-    min_reward, max_reward, min_c_reward, max_c_reward = 1e6, -1e6, 1e6, -1e6
-    while num_steps < min_batch_size:
-        state = process_state(*env.reset(), running_state)
-        reward_episode = 0
-        for t in range(10000):
-            signal.signal(signal.SIGINT, signal_handler)
-            action = select_action(policy, *state, mean_action)
-            next_state, reward, done = step_environment(env, action, running_state, custom_reward)
-            reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, reward_done, num_episodes_success, num_steps_episodes = process_reward(reward, *state, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes)
-            memory.push(*state, action, 0 if done else 1, *next_state, reward)
-            if render: env.render()
-            if done: break
-            state = next_state
-        num_steps += t + 1
-        num_episodes += 1
-        total_reward += reward_episode
-        min_reward = min(min_reward, reward_episode)
-        max_reward = max(max_reward, reward_episode)
-        if not training: write_reward(reward_episode, num_episodes)
-    log = update_log(custom_reward, log, num_episodes, num_steps, num_episodes_success, num_steps_episodes, total_reward, total_c_reward, reward_done, min_reward, max_reward, min_c_reward, max_c_reward)
-    if queue is not None:
-        queue.put([pid, memory, log])
-    else:
-        return memory, log
-
-class Agent:
-    def __init__(self, env, policy, device, custom_reward=None, running_state=None, num_threads=1, training=True):
-        self.env = env
-        self.policy = policy
-        self.device = device
-        self.custom_reward = custom_reward
-        self.running_state = running_state
-        self.num_threads = num_threads
-        self.training = training
-
-    def collect_samples(self, min_batch_size, mean_action=False, render=False):
-        if min_batch_size == 0:
-            return None, None
-        t_start = time.time()
-        to_device(torch.device("cpu"), self.policy)
-        thread_batch_size = int(math.floor(min_batch_size / self.num_threads))
-        queue = multiprocessing.Queue()
-        workers = self._start_workers(queue, thread_batch_size, mean_action)
-        memory, log = samples(0, None, self.env[0], self.policy, self.custom_reward, mean_action, render, self.running_state, thread_batch_size, training=self.training)
-        worker_results = [queue.get() for _ in workers]
-        worker_memories, worker_logs = zip(*[(res[1], res[2]) for res in worker_results])
-        for worker_memory in worker_memories:
-            memory.append(worker_memory)
-        batch = memory.sample()
-        if self.num_threads > 1:
-            log = self._merge_log([log] + list(worker_logs))
-        to_device(self.device, self.policy)
-        t_end = time.time()
-        log["sample_time"] = t_end - t_start
-        log.update(self._calculate_action_stats(batch))
-        return batch, log
-
-    def _start_workers(self, queue, thread_batch_size, mean_action):
-        workers = []
-        for i in range(self.num_threads - 1):
-            worker_args = (
-                i + 1,
-                queue,
-                self.env[i + 1],
-                self.policy,
-                self.custom_reward,
-                mean_action,
-                False,  # render is always False for worker threads
-                self.running_state,
-                thread_batch_size,
-                self.training,
-            )
-            worker = multiprocessing.Process(target=samples, args=worker_args)
-            workers.append(worker)
-            worker.start()
-        return workers
-
-    def _calculate_action_stats(self, batch):
-        actions = np.vstack(batch.action)
-        return {
-            "action_mean": np.mean(actions, axis=0),
-            "action_min": np.min(actions, axis=0),
-            "action_max": np.max(actions, axis=0)
-        }
-
-    def _merge_log(self, log_list):
-        log = dict()
-        log["total_reward"] = sum([x["total_reward"] for x in log_list])
-        log["num_episodes"] = sum([x["num_episodes"] for x in log_list])
-        log["num_steps"] = sum([x["num_steps"] for x in log_list])
-        log["avg_reward"] = log["total_reward"] / log["num_episodes"]
-        log["max_reward"] = max([x["max_reward"] for x in log_list])
-        log["min_reward"] = min([x["min_reward"] for x in log_list])
-        if "total_c_reward" in log_list[0]:
-            log["total_c_reward"] = sum([x["total_c_reward"] for x in log_list])
-            log["avg_c_reward"] = log["total_c_reward"] / log["num_steps"]
-            log["max_c_reward"] = max([x["max_c_reward"] for x in log_list])
-            log["min_c_reward"] = min([x["min_c_reward"] for x in log_list])
-        return log
