@@ -7,24 +7,11 @@ import time
 import os
 import sys
 import signal
-from core.env import UnderwaterNavigation
+from core.unity_underwater_env import Underwater_navigation
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
 class Agent:
-    """
-    The Agent class represents an agent that interacts with an environment using a policy.
-
-    Args:
-        env (object): The environment object.
-        policy (object): The policy object.
-        device (object): The device object.
-        custom_reward (callable, optional): A custom reward function. Defaults to None.
-        running_state (object, optional): The running state object. Defaults to None.
-        num_threads (int, optional): The number of worker threads. Defaults to 1.
-        training (bool, optional): Whether the agent is in training mode. Defaults to True.
-    """
-
     def __init__(self, env, policy, device, custom_reward=None, running_state=None, num_threads=1, training=True):
         self.env = env
         self.policy = policy
@@ -35,50 +22,50 @@ class Agent:
         self.training = training
 
     def collect_samples(self, min_batch_size, mean_action=False, render=False):
-        """
-        Collects samples from the environment using the agent's policy.
-
-        Args:
-            min_batch_size (int): The minimum batch size of samples to collect.
-            mean_action (bool, optional): Whether to use the mean action. Defaults to False.
-            render (bool, optional): Whether to render the environment. Defaults to False.
-
-        Returns:
-            tuple: A tuple containing the collected batch of samples and a log dictionary.
-        """
         if min_batch_size == 0:
             return None, None
         t_start = time.time()
+
         to_device(torch.device("cpu"), self.policy)
         thread_batch_size = int(math.floor(min_batch_size / self.num_threads))
         queue = multiprocessing.Queue()
         workers = self._start_workers(queue, thread_batch_size, mean_action)
+        
+        # Collect samples from the main environment
         memory, log = samples(0, None, self.env[0], self.policy, self.custom_reward, mean_action, render, self.running_state, thread_batch_size, training=self.training)
-        worker_results = [queue.get() for _ in workers]
-        worker_memories, worker_logs = zip(*[(res[1], res[2]) for res in worker_results])
+        
+        # Get results from worker threads
+        print("getting results from workers")
+        worker_logs = [None] * len(workers)
+        worker_memories = [None] * len(workers)
+        for _ in workers:
+            pid, worker_memory, worker_log = queue.get()
+            worker_memories[pid - 1] = worker_memory
+            worker_logs[pid - 1] = worker_log
+        print("got results from workers")
+        
+        # Append worker memories to the main memory
         for worker_memory in worker_memories:
             memory.append(worker_memory)
-        batch = memory.sample()
+        
+        # Merge logs from the main environment and worker threads
         if self.num_threads > 1:
             log = self._merge_log([log] + list(worker_logs))
+        
+        # Sample a batch from the memory
+        batch = memory.sample()
+        
         to_device(self.device, self.policy)
         t_end = time.time()
+        
+        # Calculate sample time and action statistics
         log["sample_time"] = t_end - t_start
         log.update(self._calculate_action_stats(batch))
+        
         return batch, log
 
     def _start_workers(self, queue, thread_batch_size, mean_action):
-        """
-        Starts the worker threads for collecting samples.
-
-        Args:
-            queue (object): The multiprocessing queue.
-            thread_batch_size (int): The batch size for each worker thread.
-            mean_action (bool): Whether to use the mean action.
-
-        Returns:
-            list: A list of worker processes.
-        """
+        print("num workers", self.num_threads)
         workers = []
         for i in range(self.num_threads - 1):
             worker_args = (
@@ -98,33 +85,7 @@ class Agent:
             worker.start()
         return workers
 
-    def _calculate_action_stats(self, batch):
-        """
-        Calculates statistics of the actions in the batch.
-
-        Args:
-            batch (object): The batch of samples.
-
-        Returns:
-            dict: A dictionary containing the action statistics.
-        """
-        actions = np.vstack(batch.action)
-        return {
-            "action_mean": np.mean(actions, axis=0),
-            "action_min": np.min(actions, axis=0),
-            "action_max": np.max(actions, axis=0)
-        }
-
     def _merge_log(self, log_list):
-        """
-        Merges the log dictionaries from multiple worker threads.
-
-        Args:
-            log_list (list): A list of log dictionaries.
-
-        Returns:
-            dict: A merged log dictionary.
-        """
         log = dict()
         log["total_reward"] = sum([x["total_reward"] for x in log_list])
         log["num_episodes"] = sum([x["num_episodes"] for x in log_list])
@@ -139,7 +100,15 @@ class Agent:
             log["min_c_reward"] = min([x["min_c_reward"] for x in log_list])
         return log
 
-def samples(pid, queue, env, policy, custom_reward, mean_action, render, running_state, min_batch_size, training=True):
+    def _calculate_action_stats(self, batch):
+        actions = np.vstack(batch.action)
+        return {
+            "action_mean": np.mean(actions, axis=0),
+            "action_min": np.min(actions, axis=0),
+            "action_max": np.max(actions, axis=0)
+        }
+
+def samples(pid, queue, env: Underwater_navigation, policy, custom_reward, mean_action, render, running_state, min_batch_size, training=True):
     """
     Collects a batch of experiences from the environment using the given policy.
 
@@ -170,7 +139,8 @@ def samples(pid, queue, env, policy, custom_reward, mean_action, render, running
             action = select_action(policy, *state, mean_action)
             next_state, reward, done = step_environment(env, action, running_state)
             reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, reward_done, num_episodes_success, num_steps_episodes = process_reward(reward, *state, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes)
-            memory.push(*state, action, 0 if done else 1, *next_state, reward)
+            next_img_depth, next_goal, _, next_hist_action = next_state
+            memory.push(*state, action, 0 if done else 1, next_img_depth, next_goal, next_hist_action, reward)
             if render: env.render()
             if done: break
             state = next_state
@@ -189,7 +159,7 @@ def samples(pid, queue, env, policy, custom_reward, mean_action, render, running
 def signal_handler(sig, frame):
     sys.exit(0)
 
-def initialize_env(env, pid):
+def initialize_env(env: Underwater_navigation, pid):
     """
     Initializes the environment with a random seed based on the process ID.
 
@@ -241,7 +211,7 @@ def select_action(policy: Policy, img_depth, goal, ray, hist_action, mean_action
     Selects an action based on the given policy and input data.
 
     Args:
-        policy (MyPolicy): The policy to use for selecting the action.
+        policy (Policy): The policy to use for selecting the action.
         img_depth (numpy.ndarray): The depth image input.
         goal (numpy.ndarray): The goal input.
         ray (numpy.ndarray): The ray input.
@@ -265,7 +235,7 @@ def select_action(policy: Policy, img_depth, goal, ray, hist_action, mean_action
     action = int(action) if policy.is_disc_action else action.astype(np.float64)
     return action
 
-def step_environment(env: UnderwaterNavigation, action, running_state):
+def step_environment(env: Underwater_navigation, action, running_state):
     """
     Takes a step in the environment using the given action and returns the next state, reward, and done flag.
 
@@ -285,26 +255,10 @@ def step_environment(env: UnderwaterNavigation, action, running_state):
     """
     next_img_depth, next_goal, next_ray, next_hist_action, reward, done, _ = env.step(action)
     next_img_depth, next_goal, next_ray, next_hist_action = process_state(next_img_depth, next_goal, next_ray, next_hist_action, running_state)
-    return next_img_depth, next_goal, next_ray, next_hist_action, reward, done
+    next_state = (next_img_depth, next_goal, next_ray, next_hist_action)
+    return next_state, reward, done
 
-def write_reward(reward, num_episodes):
-    """
-    Write the given reward to a file and exit the program if the number of episodes
-    is greater than or equal to 5.
-
-    Args:
-        reward (float): The reward to write to the file.
-        num_episodes (int): The number of episodes that have been completed.
-
-    Returns:
-        None
-    """
-    with open(os.path.join(assets_dir(), "learned_models/test_rewards.txt"), "a") as f:
-        f.write(f"{reward}\n\n")
-    if num_episodes >= 5:
-        sys.exit()
-
-def process_reward(reward, img_depth, goal, ray, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes):
+def process_reward(reward, img_depth, goal, ray, action, hist_action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes):
     """
     Processes the reward obtained by the agent after taking an action in the environment.
 
@@ -314,6 +268,7 @@ def process_reward(reward, img_depth, goal, ray, action, custom_reward, total_c_
         goal (numpy.ndarray): The goal position in the environment.
         ray (numpy.ndarray): The ray casted from the agent to the goal position.
         action (numpy.ndarray): The action taken by the agent.
+        hist_action (numpy.ndarray): The previous action taken by the agent.
         custom_reward (function): A custom reward function to be used instead of the default reward.
         total_c_reward (float): The total custom reward obtained by the agent.
         min_c_reward (float): The minimum custom reward obtained by the agent.
@@ -340,6 +295,23 @@ def process_reward(reward, img_depth, goal, ray, action, custom_reward, total_c_
             num_episodes_success += 1
             num_steps_episodes += t
     return reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, reward_done, num_episodes_success, num_steps_episodes
+
+def write_reward(reward, num_episodes):
+    """
+    Write the given reward to a file and exit the program if the number of episodes
+    is greater than or equal to 5.
+
+    Args:
+        reward (float): The reward to write to the file.
+        num_episodes (int): The number of episodes that have been completed.
+
+    Returns:
+        None
+    """
+    with open(os.path.join(assets_dir(), "learned_models/test_rewards.txt"), "a") as f:
+        f.write(f"{reward}\n\n")
+    if num_episodes >= 5:
+        sys.exit()
 
 def update_log(custom_reward, log, num_episodes, num_steps, num_episodes_success, num_steps_episodes, total_reward, total_c_reward, reward_done, min_reward, max_reward, min_c_reward, max_c_reward):
     """
