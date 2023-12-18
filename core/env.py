@@ -100,39 +100,41 @@ class UnderwaterNavigation:
         self.obs_rays = np.array([obs_ray.tolist()] * self.history)
         self.obs_actions = np.array([[0, 0]] * self.history)
         self.obs_visibility = np.reshape(self.visibility_para_Gaussian, [1, 1, 1])
-        self.firstDetect = True
+        
+        # self.firstDetect = True
 
-        # Process observation image with YOLO
-        color_img = self._yolo_process(obs_img_ray[0])
+        # # Process observation image with YOLO
+        # color_img = self._yolo_process(obs_img_ray[0])
 
-        # Get the current position of the robot
-        x_pos = obs_goal_depthfromwater[4]
-        y_pos = obs_goal_depthfromwater[3]
-        z_pos = obs_goal_depthfromwater[5]
-        orientation = obs_goal_depthfromwater[6]
+        # # Get the current position of the robot
+        # x_pos = obs_goal_depthfromwater[4]
+        # y_pos = obs_goal_depthfromwater[3]
+        # z_pos = obs_goal_depthfromwater[5]
+        # orientation = obs_goal_depthfromwater[6]
 
-        # Detect the bottle in the observation image
-        horizontal, vertical, hdeg, detected = self._detect_bottle(color_img)
-        if detected:
-            self.obs_goals = np.array([[horizontal, vertical, hdeg]] * self.history)
-            self.randomGoal = False
-            self.firstDetect = False
-        else:
-            self.randomGoal = True
+        # # Detect the bottle in the observation image
+        # horizontal, vertical, hdeg, detected = self._detect_bottle(color_img)
+        # if detected:
+        #     self.obs_goals = np.array([[horizontal, vertical, hdeg]] * self.history)
+        #     self.randomGoal = False
+        #     self.firstDetect = False
+        # else:
+        #     self.randomGoal = True
 
-        # Get the position of the bottle (goal)
-        self._update_prev_goal(x_pos, y_pos, z_pos, orientation)
+        # # Get the position of the bottle (goal)
+        # self._update_prev_goal(x_pos, y_pos, z_pos, orientation)
 
-        # Randomize the goal position
-        if self.randomGoal:
-            self.prevGoal[0] += random.uniform(-3, 3)
-            self.prevGoal[1] += random.uniform(-0.25, 0.25)
-            self.prevGoal[2] += random.uniform(-3, 3)
-            print(self.prevGoal)
-            horizontal, vertical, hdeg = self._update_obs_goal(obs_goal_depthfromwater)
-            self.obs_goals = np.array([[horizontal, vertical, hdeg]] * self.history)
-        print("Score: {} / {}".format(self.total_correct, self.total_steps))
-        print("Scorev2: {} / {}".format(self.reach_goal, self.total_episodes))
+        # # Randomize the goal position
+        # if self.randomGoal:
+        #     self.prevGoal[0] += random.uniform(-3, 3)
+        #     self.prevGoal[1] += random.uniform(-0.25, 0.25)
+        #     self.prevGoal[2] += random.uniform(-3, 3)
+        #     print(self.prevGoal)
+        #     horizontal, vertical, hdeg = self._update_obs_goal(obs_goal_depthfromwater)
+        #     self.obs_goals = np.array([[horizontal, vertical, hdeg]] * self.history)
+        # print("Score: {} / {}".format(self.total_correct, self.total_steps))
+        # print("Scorev2: {} / {}".format(self.reach_goal, self.total_episodes))
+
         return (self.obs_predicted_depths, self.obs_goals, self.obs_rays, self.obs_actions)
 
     def step(self, action):
@@ -232,6 +234,7 @@ class UnderwaterNavigation:
         self._eval_save(obs_goal_depthfromwater)
         self.time_after = time.time()
         self.total_steps += 1
+        
         return (self.obs_predicted_depths, self.obs_goals, self.obs_rays, self.obs_actions, reward, done, 0)
 
     def _get_obs(self, obs_img_ray):
