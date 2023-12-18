@@ -12,7 +12,6 @@ from gym_unity.envs import UnityToGymWrapper
 from mlagents_envs.side_channel.side_channel import SideChannel, IncomingMessage, OutgoingMessage
 from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
 from torchvision import transforms
-from nnmodels.funie import GeneratorFunieGAN
 from PIL import Image
 from torchvision.utils import make_grid
 import random
@@ -59,6 +58,7 @@ class PosChannel(SideChannel):
 
 class UnderwaterNavigation:
     def __init__(self, depth_prediction_model, adaptation, randomization, rank, history, start_goal_pos=None, training=True):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._validate_parameters(adaptation, randomization, start_goal_pos, training)
         self._initialize_parameters(adaptation, randomization, history, training, start_goal_pos)
         self._setup_unity_env(rank)
@@ -67,25 +67,32 @@ class UnderwaterNavigation:
     def reset(self):
         self.total_episodes += 1
         self.step_count = 0
+
         # Adjust the visibility of the environment before resetting
         self._adjust_visibility()
         self.env.reset()
+
         # Retrieve the first observation
         obs_goal_depthfromwater = np.array(self.pos_info.goal_depthfromwater_info())
         self._eval_save(obs_goal_depthfromwater)
+
         # Stepping with zero action to get the first observation
         obs_img_ray, _, done, _ = self.env.step([0, 0])
         obs_predicted_depth = self.dpt.run(obs_img_ray[0] ** 0.45)
+
         # Get the minimum value of certain indices in the second channel of obs_img_ray
         indices = [1, 3, 5, 33, 35]
         values = [obs_img_ray[1][i] for i in indices]
         min_value = np.min(values)
+
         # Multiply the minimum value by 8 and 0.5 to get the final value for obs_ray
         obs_ray_value = min_value * 8 * 0.5
         obs_ray = np.array([obs_ray_value])
+
         # Retrive the second observation
         obs_goal_depthfromwater = np.array(self.pos_info.goal_depthfromwater_info())
         self._eval_save(obs_goal_depthfromwater)
+
         # Construct the observations of depth images, goal infos, and rays\
         self.prevPos = (obs_goal_depthfromwater[4], obs_goal_depthfromwater[3], obs_goal_depthfromwater[5])
         self.obs_predicted_depths = np.array([obs_predicted_depth.tolist()] * self.history)
@@ -94,13 +101,16 @@ class UnderwaterNavigation:
         self.obs_actions = np.array([[0, 0]] * self.history)
         self.obs_visibility = np.reshape(self.visibility_para_Gaussian, [1, 1, 1])
         self.firstDetect = True
+
         # Process observation image with YOLO
         color_img = self._yolo_process(obs_img_ray[0])
+
         # Get the current position of the robot
         x_pos = obs_goal_depthfromwater[4]
         y_pos = obs_goal_depthfromwater[3]
         z_pos = obs_goal_depthfromwater[5]
         orientation = obs_goal_depthfromwater[6]
+
         # Detect the bottle in the observation image
         horizontal, vertical, hdeg, detected = self._detect_bottle(color_img)
         if detected:
@@ -109,8 +119,10 @@ class UnderwaterNavigation:
             self.firstDetect = False
         else:
             self.randomGoal = True
+
         # Get the position of the bottle (goal)
         self._update_prev_goal(x_pos, y_pos, z_pos, orientation)
+
         # Randomize the goal position
         if self.randomGoal:
             self.prevGoal[0] += random.uniform(-3, 3)
@@ -125,14 +137,17 @@ class UnderwaterNavigation:
 
     def step(self, action):
         self.time_before = time.time()
+        
         # action[0] controls its vertical speed, action[1] controls its rotation speed
         action_ver, action_rot = action
         action_rot *= self.twist_range
+        
         # observations per frame
         obs_img_ray, _, done, _ = self.env.step([action_ver, action_rot])
         obs_predicted_depth = self.dpt.run(obs_img_ray[0] ** 0.45)
         obs_predicted_depth = np.reshape(obs_predicted_depth, (1, self.dpt.depth_image_height, self.dpt.depth_image_width))
         self.obs_predicted_depths = np.append(obs_predicted_depth, self.obs_predicted_depths[: (self.history - 1), :, :], axis=0)
+        
         # compute obstacle distance
         obs_ray, obstacle_distance, obstacle_distance_vertical = self._get_obs(obs_img_ray)
         """
@@ -155,6 +170,7 @@ class UnderwaterNavigation:
         x_pos = obs_goal_depthfromwater[4]
         z_pos = obs_goal_depthfromwater[5]
         orientation = obs_goal_depthfromwater[6]
+
         # 1. give a negative reward when robot is too close to nearby obstacles, seafloor or the water surface
         if obstacle_distance < 0.5:
             reward_obstacle = -10
@@ -173,6 +189,7 @@ class UnderwaterNavigation:
             print("Vertical distance to nearest obstacle:", obstacle_distance_vertical)
         else:
             reward_obstacle = 0
+
         # 2. give a positive reward if the robot reaches the goal
         goal_distance_threshold = 0.6 if self.training else 0.8
         if horizontal_distance < goal_distance_threshold:
@@ -182,8 +199,10 @@ class UnderwaterNavigation:
             self.reach_goal += 1
         else:
             reward_goal_reached = 0
+
         # 3. give a positive reward if the robot is reaching the goal
         reward_goal_reaching_vertical = np.abs(action_ver) if vertical_distance * action_ver > 0 else -np.abs(action_ver)
+
         # 4. give negative rewards if the robot too often turns its direction or is near any obstacle
         reward_goal_reaching_horizontal = (-angle_to_goal_abs_rad + np.pi / 3) / 10
         if 0.5 <= obstacle_distance < 1.0:
@@ -194,6 +213,7 @@ class UnderwaterNavigation:
         if self.step_count > 500:
             done = True
             print("Exceeds the max num_step...")
+            
         # detect the bottle
         color_img = self._yolo_process(obs_img_ray[0])
         horizontal, vertical, hdeg, detected = self._detect_bottle(color_img)
@@ -281,7 +301,6 @@ class UnderwaterNavigation:
         self.total_correct = 0
         self.total_episodes = 0
         self.reach_goal = 0
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _setup_unity_env(self, rank):
         config_channel = EngineConfigurationChannel()

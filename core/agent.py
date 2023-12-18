@@ -7,7 +7,7 @@ import time
 import os
 import sys
 import signal
-from core.unity_underwater_env import UnderwaterNavigation
+from core.env import UnderwaterNavigation
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -117,7 +117,7 @@ def samples(pid, queue, env, policy, custom_reward, mean_action, render, running
         for t in range(10000):
             signal.signal(signal.SIGINT, signal_handler)
             action = select_action(policy, *state, mean_action)
-            next_state, reward, done = step_environment(env, action, running_state, custom_reward)
+            next_state, reward, done = step_environment(env, action, running_state)
             reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, reward_done, num_episodes_success, num_steps_episodes = process_reward(reward, *state, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes)
             memory.push(*state, action, 0 if done else 1, *next_state, reward)
             if render: env.render()
@@ -150,11 +150,13 @@ def initialize_env(env, pid):
         int: The environment seed.
     """
     if pid > 0:
-        torch.manual_seed(torch.randint(0, 5000, (1,)) * pid)
-        env_seed = env.np_random.randint(5000) * pid if hasattr(env, "np_random") else None
+        torch.manual_seed(torch.randint(0, 5000, (1,)) * pid) # seed torch with a random seed based on the process ID
+
+        # seed numpy with a random seed based on the process ID
+        if hasattr(env, "np_random"):
+            env.np_random.seed(env.np_random.randint(5000) * pid)
         if hasattr(env, "env") and hasattr(env.env, "np_random"):
             env.env.np_random.seed(env.env.np_random.randint(5000) * pid)
-    return env_seed
 
 def process_state(img_depth, goal, ray, hist_action, running_state):
     """
