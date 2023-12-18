@@ -35,7 +35,7 @@ def iter_prepare(data, start_index, batch_size):
     end_index = min(start_index + batch_size, len(data[0]))
     return [x[start_index:end_index] for x in data]
 
-def update_networks(batch: object, iteration: int, policy_network: MyPolicy, value_network: Value, optimizer_policy: torch.optim.Optimizer, optimizer_value: torch.optim.Optimizer, args: Namespace, dtype: torch.dtype, device: torch.device, optim_epochs: int = 10, optim_batch_size: int = 64) -> object:
+def update_networks(batch: object, iteration: int, policy_network: Policy, value_network: Value, optimizer_policy: torch.optim.Optimizer, optimizer_value: torch.optim.Optimizer, args: Namespace, dtype: torch.dtype, device: torch.device, optim_epochs: int = 10, optim_batch_size: int = 64) -> object:
     # Process and convert batch data to tensors
     imgs_depth = torch.from_numpy(np.stack(batch.img_depth)).to(dtype).to(device)
     goals = torch.from_numpy(np.stack(batch.goal)).to(dtype).to(device)

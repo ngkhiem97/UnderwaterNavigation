@@ -185,7 +185,7 @@ def process_state(img_depth, goal, ray, hist_action, running_state):
         )
     return img_depth, goal, ray, hist_action
 
-def select_action(policy: MyPolicy, img_depth, goal, ray, hist_action, mean_action):
+def select_action(policy: Policy, img_depth, goal, ray, hist_action, mean_action):
     """
     Selects an action based on the given policy and input data.
 

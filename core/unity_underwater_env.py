@@ -6,7 +6,7 @@ import time
 import uuid
 import random
 import os
-from utils import *
+from util import *
 
 from typing import List
 from gym import spaces
