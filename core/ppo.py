@@ -1,5 +1,5 @@
 import torch
-from util import to_device
+from utils import to_device
 
 def ppo_step(policy_net, value_net, optimizer_policy, optimizer_value, optim_value_iternum, imgs_depth,
              goals, rays, hist_actions, actions, returns, advantages, fixed_log_probs, clip_epsilon, l2_reg):

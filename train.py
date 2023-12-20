@@ -3,9 +3,9 @@ import os
 import sys
 import time
 import torch
-from core.unity_underwater_env import Underwater_navigation
+from core.env import UnderwaterNavigation
 from core.agent import Agent
-from util import *
+from utils import *
 
 # Append system path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -21,7 +21,7 @@ if torch.cuda.is_available():
     torch.cuda.set_device(args.gpu_index)
 
 # Initialize environments and agent
-environments = [Underwater_navigation(args.depth_prediction_model, args.adaptation, args.randomization, i, args.hist_length) for i in range(args.num_threads)]
+environments = [UnderwaterNavigation(args.depth_prediction_model, args.adaptation, args.randomization, i, args.hist_length) for i in range(args.num_threads)]
 running_state = ZFilter(environments[0].observation_space_img_depth, environments[0].observation_space_goal, environments[0].observation_space_ray, clip=30)
 
 # Initialize networks

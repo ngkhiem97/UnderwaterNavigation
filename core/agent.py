@@ -1,7 +1,7 @@
 import multiprocessing
-from util.replay_memory import Memory
-from util.torchpy import *
-from util.tools import *
+from utils.replay_memory import Memory
+from utils.torchpy import *
+from utils.tools import *
 import math
 import time
 import os
@@ -139,7 +139,7 @@ class Agent:
             log["min_c_reward"] = min([x["min_c_reward"] for x in log_list])
         return log
 
-def samples(pid, queue, env, policy, custom_reward, mean_action, render, running_state, min_batch_size, training=True):
+def samples(pid, queue, env: UnderwaterNavigation, policy, custom_reward, mean_action, render, running_state, min_batch_size, training=True):
     """
     Collects a batch of experiences from the environment using the given policy.
 
@@ -170,7 +170,8 @@ def samples(pid, queue, env, policy, custom_reward, mean_action, render, running
             action = select_action(policy, *state, mean_action)
             next_state, reward, done = step_environment(env, action, running_state)
             reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, reward_done, num_episodes_success, num_steps_episodes = process_reward(reward, *state, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes)
-            memory.push(*state, action, 0 if done else 1, *next_state, reward)
+            next_img_depth, next_goal, _, next_hist_action = next_state
+            memory.push(*state, action, 0 if done else 1, next_img_depth, next_goal, next_hist_action, reward)
             if render: env.render()
             if done: break
             state = next_state
@@ -285,7 +286,8 @@ def step_environment(env: UnderwaterNavigation, action, running_state):
     """
     next_img_depth, next_goal, next_ray, next_hist_action, reward, done, _ = env.step(action)
     next_img_depth, next_goal, next_ray, next_hist_action = process_state(next_img_depth, next_goal, next_ray, next_hist_action, running_state)
-    return next_img_depth, next_goal, next_ray, next_hist_action, reward, done
+    next_state = (next_img_depth, next_goal, next_ray, next_hist_action)
+    return next_state, reward, done
 
 def write_reward(reward, num_episodes):
     """
@@ -299,12 +301,13 @@ def write_reward(reward, num_episodes):
     Returns:
         None
     """
-    with open(os.path.join(assets_dir(), "learned_models/test_rewards.txt"), "a") as f:
+    asset_dir = path.abspath(path.join(path.dirname(path.abspath(__file__)), '../assets'))
+    with open(os.path.join(asset_dir, "learned_models/test_rewards.txt"), "a") as f:
         f.write(f"{reward}\n\n")
     if num_episodes >= 5:
         sys.exit()
 
-def process_reward(reward, img_depth, goal, ray, action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes):
+def process_reward(reward, img_depth, goal, ray, action, hist_action, custom_reward, total_c_reward, min_c_reward, max_c_reward, reward_episode, done, reward_done, t, num_episodes_success, num_steps_episodes):
     """
     Processes the reward obtained by the agent after taking an action in the environment.
 
@@ -314,6 +317,7 @@ def process_reward(reward, img_depth, goal, ray, action, custom_reward, total_c_
         goal (numpy.ndarray): The goal position in the environment.
         ray (numpy.ndarray): The ray casted from the agent to the goal position.
         action (numpy.ndarray): The action taken by the agent.
+        hist_action (numpy.ndarray): The previous action taken by the agent.
         custom_reward (function): A custom reward function to be used instead of the default reward.
         total_c_reward (float): The total custom reward obtained by the agent.
         min_c_reward (float): The minimum custom reward obtained by the agent.

@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-from util.mathpy import *
+from utils.mathpy import *
 
 
 class Policy(nn.Module):

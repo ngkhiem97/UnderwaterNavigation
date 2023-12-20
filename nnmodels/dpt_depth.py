@@ -51,7 +51,7 @@ class DPTDepth:
 
     def _init_model_params(self, model_type, model_path):
         if model_type in ["dpt_large", "dpt_hybrid"]:
-            self._set_common_params(384, model_path, model_type)
+            self._set_common_params(model_path, model_type)
         elif model_type == "dpt_hybrid_kitti":
             self._set_kitti_params(model_path)
         elif model_type == "dpt_hybrid_nyu":

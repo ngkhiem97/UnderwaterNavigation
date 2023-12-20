@@ -7,7 +7,7 @@ import pickle
 from core.ppo import ppo_step, estimate_advantages
 import numpy as np
 from argparse import Namespace
-from util.torchpy import to_device
+from utils.torchpy import to_device
 
 def assets_dir():
     # Returns the absolute path to the assets directory.
