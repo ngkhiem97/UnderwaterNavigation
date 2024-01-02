@@ -3,6 +3,9 @@ Source code for paper [*Monocular Camera and Single-Beam Sonar-Based Underwater 
 Navigation with Domain Randomization*](https://arxiv.org/abs/2212.04373). You could also check [this](https://github.com/dartmouthrobotics/deeprl-uw-robot-navigation) as another github repo.
 The PPO implementation and the underwater env are referred to [PyTorch-RL](https://github.com/Khrylx/PyTorch-RL.git), and 
 [Optically-Realistic-Water](https://github.com/muckSponge/Optically-Realistic-Water) respectively.
+
+THIS SOURCE CODE IS THE REFACTORED VERSION OF THE ORIGINAL PROGRAM FOR READABILITY
+
 ### Installation
 ```
 virtualenv --no-site-packages UW_nav --python=python3.6
